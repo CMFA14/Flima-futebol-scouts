@@ -30,10 +30,16 @@ const TEAM_MAP = {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function scrapeFBref() {
+    const isCloud = process.env.GITHUB_ACTIONS === 'true';
     const browser = await puppeteer.launch({ 
-        headless: false,
-        defaultViewport: null,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+        headless: true, // Forçado para evitar erros de DISPLAY em servidores/ambientes remotos
+        defaultViewport: { width: 1280, height: 800 },
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-blink-features=AutomationControlled',
+            '--window-size=1280,800'
+        ]
     });
     
     const fbrefDatabase = {};
@@ -42,18 +48,20 @@ async function scrapeFBref() {
         const page = await browser.newPage();
         
         // Stealth settings
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-            get: () => false,
-            });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
         });
 
         // 1. POSSE DE BOLA
         console.log("Buscando Posse de Bola...");
-        console.log("ATENÇÃO: Caso apareça um CAPTCHA do CloudFlare, clique para resolver. Você tem 20 segundos.");
-        await page.goto('https://fbref.com/pt/comps/24/possession/Estatisticas-Serie-A', { waitUntil: 'domcontentloaded' });
-        await sleep(20000); // 20 segundos para o usuário clicar
+        await page.goto('https://fbref.com/pt/comps/24/possession/Estatisticas-Serie-A', { 
+            waitUntil: 'networkidle2',
+            timeout: 60000 
+        });
+        await page.waitForSelector('#stats_squads_possession_for', { timeout: 60000 });
 
         
         const possData = await page.evaluate(() => {
@@ -81,11 +89,10 @@ async function scrapeFBref() {
         
         console.log(`Encontrou ${possData.length} times em Posse.`);
 
-        // 2. DEFESA
-        // 2. DEFESA (Interceptações e Bloqueios) + POSSE DE BOLA (%)
-        console.log("Buscando Defesa (Interceptações e Bloqueios) e Posse de Bola %...");
-        await page.goto('https://fbref.com/pt/comps/24/defense/Estatisticas-Serie-A', { waitUntil: 'domcontentloaded' });
-        await sleep(6000);
+        // 2. DEFESA (Interceptações e Bloqueios)
+        console.log("Buscando Defesa (Interceptações e Bloqueios)...");
+        await page.goto('https://fbref.com/pt/comps/24/defense/Estatisticas-Serie-A', { waitUntil: 'networkidle2' });
+        await page.waitForSelector('#stats_squads_defense_for', { timeout: 15000 });
         
         const defData = await page.evaluate(() => {
             const results = [];
@@ -105,6 +112,11 @@ async function scrapeFBref() {
             return results;
         });
         console.log(`Encontrou ${defData.length} times em Defesa.`);
+
+        // 2.1 POSSE DE BOLA (%) - Voltando para a página de posse
+        console.log("Buscando Posse de Bola % (Retornando para página de Posse)...");
+        await page.goto('https://fbref.com/pt/comps/24/possession/Estatisticas-Serie-A', { waitUntil: 'networkidle2' });
+        await page.waitForSelector('#stats_squads_possession_for', { timeout: 15000 });
 
         const possPctData = await page.evaluate(() => {
             const results = [];
@@ -126,8 +138,8 @@ async function scrapeFBref() {
 
         // 3. SHOOTING (Gols e Chutes no Alvo)
         console.log("Buscando Finalizações (Gols e Chutes no Alvo)...");
-        await page.goto('https://fbref.com/pt/comps/24/shooting/Estatisticas-Serie-A', { waitUntil: 'domcontentloaded' });
-        await sleep(6000);
+        await page.goto('https://fbref.com/pt/comps/24/shooting/Estatisticas-Serie-A', { waitUntil: 'networkidle2' });
+        await page.waitForSelector('#stats_squads_shooting_for', { timeout: 15000 });
         
         const shootData = await page.evaluate(() => {
             const results = [];
@@ -150,8 +162,8 @@ async function scrapeFBref() {
 
         // 4. MISC (Faltas e Cartões)
         console.log("Buscando Atributos Diversos (Faltas)...");
-        await page.goto('https://fbref.com/pt/comps/24/misc/Estatisticas-Serie-A', { waitUntil: 'domcontentloaded' });
-        await sleep(6000);
+        await page.goto('https://fbref.com/pt/comps/24/misc/Estatisticas-Serie-A', { waitUntil: 'networkidle2' });
+        await page.waitForSelector('#stats_squads_misc_for', { timeout: 15000 });
         
         const miscData = await page.evaluate(() => {
             const results = [];
@@ -190,8 +202,8 @@ async function scrapeFBref() {
 
         // 5. TABELA DO BRASILEIRÃO (Geral + xGA)
         console.log("Buscando Tabela de Classificação...");
-        await page.goto('https://fbref.com/pt/comps/24/Estatisticas-Serie-A', { waitUntil: 'domcontentloaded' });
-        await sleep(6000);
+        await page.goto('https://fbref.com/pt/comps/24/Estatisticas-Serie-A', { waitUntil: 'networkidle2' });
+        await page.waitForSelector('.stats_table', { timeout: 15000 });
         
         const tableData = await page.evaluate(() => {
             const results = [];

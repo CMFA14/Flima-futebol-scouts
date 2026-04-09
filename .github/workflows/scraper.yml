@@ -1,0 +1,42 @@
+name: "🔄 Atualizar Dados FBref"
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # Roda todo dia às 03:00 UTC (Meia-noite Brasília)
+  workflow_dispatch: # Permite rodar manualmente pelo botão no GitHub
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout do Repositório
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 📦 Instalar Dependências
+        run: npm install
+
+      - name: 🕵️‍♂️ Rodar Scraper do FBref
+        run: npm run scrape
+        env:
+          GITHUB_ACTIONS: true
+
+      - name: 📤 Salvar e Comitar Mudanças
+        run: |
+          git config --global user.name "Flima Bot"
+          git config --global user.email "bot@flima.com"
+          git add src/data/*.json
+          if git diff --staged --quiet; then
+            echo "Nenhuma mudança nos dados detectada."
+          else
+            git commit -m "data: auto-update fbref stats [skip ci]"
+            git push
+          fi

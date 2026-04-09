@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
-    "scrape": "node --experimental-strip-types scripts/scraper.ts",
+    "scrape": "node scripts/scraper.js",
     "fetch:sofascore": "node scripts/fetchSofascore.js"
   },
   "dependencies": {
