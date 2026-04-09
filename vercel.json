@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/cartola/:path*",
+      "destination": "https://api.cartola.globo.com/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
