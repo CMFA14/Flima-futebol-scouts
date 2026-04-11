@@ -171,7 +171,7 @@ function App() {
               setManualBettingResponse(res);
               setActiveTab('betting');
             }} />}
-            {activeTab === 'ml' && <MachineLearningPanel data={data} matches={matches} />}
+            {activeTab === 'ml' && <MachineLearningPanel data={data} matches={matches} onPlayerClick={setGlobalSelectedPlayer} />}
           </div>
 
           {/* Direita: Partidas no Celular ou Apenas Sidebar na WEB */}

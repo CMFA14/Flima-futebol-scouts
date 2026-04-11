@@ -18,6 +18,9 @@ export interface PlayerProjection {
   foto: string;
   media_base: number;
   expected_points: number;
+  confidence: number; // 0-1: quão confiante estamos na projeção
+  ceiling: number; // Teto estimado (percentil 85)
+  floor: number; // Piso estimado (percentil 15)
   rodada: number;
 }
 
@@ -108,8 +111,8 @@ export const generateProjections = (
     const matchData = opponentMap[p.clube_id];
     if (!matchData) return; // Não tem partida válida
 
-    // Começamos o cálculo pela média base do jogador
-    let expected = (p as any).media_base_scout || p.media_num;
+    // Começamos o cálculo pela média base do jogador (preferindo a média por scouts quando disponível)
+    let expected = p.media_base_scout || p.media_num;
 
     // --- Fator Mando de Campo (usando home/away splits reais do FBref) ---
     const myClubAbrv = data.clubes[p.clube_id]?.abreviacao;
@@ -121,14 +124,17 @@ export const generateProjections = (
       const ha = myFbref.home_away;
       const hg = ha.home_games || 0;
       const ag = ha.away_games || 0;
-      const hp = ha.home_points || 0;
-      const ap = ha.away_points || 0;
+      const hpa = ha.home_points_avg || 0;
+      const apa = ha.away_points_avg || 0;
       const totalGames = hg + ag;
-      if (totalGames > 0) {
-        const overallPtsAvg = (hp + ap) / totalGames;
-        const relevantPtsAvg = matchData.isHome ? (ha.home_points_avg || 0) : (ha.away_points_avg || 0);
-        const homeAwayFactor = overallPtsAvg > 0 ? relevantPtsAvg / overallPtsAvg : 1;
-        expected *= Math.max(0.85, Math.min(1.20, homeAwayFactor));
+      if (totalGames > 0 && (hg > 0 && ag > 0)) {
+        // Usa diferencial (não ratio!) para evitar inflação em times desequilibrados casa/fora
+        // Ex: Flu tem 3.0 casa / 1.0 fora → avg 2.0 → diff casa = +1.0 → boost = +1.0 * 0.04 = +4%
+        const overallPtsAvg = (hpa * hg + apa * ag) / totalGames;
+        const relevantPtsAvg = matchData.isHome ? hpa : apa;
+        const diff = relevantPtsAvg - overallPtsAvg;
+        const homeAwayFactor = 1 + diff * 0.04; // ±4% por ponto de diferença
+        expected *= Math.max(0.88, Math.min(1.12, homeAwayFactor));
       } else {
         expected *= matchData.isHome ? weights.homeAdvantage : (2 - weights.homeAdvantage);
       }
@@ -144,28 +150,30 @@ export const generateProjections = (
       expected *= 1 + (wins - losses) * 0.02; // até ±10%
     }
 
+    // --- MATCHUP ADITIVO (evita acúmulo exponencial de multiplicadores) ---
+    // Cada fator soma um bônus/penalidade ao matchupBonus, que é aplicado UMA vez no final
+    let matchupBonus = 0;
+
     if (oppFbref && myFbref) {
       const myGames = myFbref.overall?.games || 10;
       const oppGames = oppFbref.overall?.games || 10;
-
-      // --- LÓGICA DE MATCHUP AVANÇADA ---
 
       // 1. Goleiros (GOL)
       if (p.posicao_id === 1) {
         const oppSoT = (oppFbref.shooting?.for?.shots_on_target || 40) / oppGames;
         const mySavePct = (myFbref.keepers?.for?.gk_save_pct || 70) / 100;
-        // Mais chutes adversários = mais oportunidades de defesa (DE)
+        // Mais chutes adversários = mais defesas (DE)
         const savePotential = (oppSoT / 4.2) * mySavePct;
-        expected *= (1 + (savePotential - 1) * 0.15);
+        matchupBonus += (savePotential - 1) * 0.10;
 
-        // Bonus clean sheet: se adversário faz poucos gols
+        // SG opportunity: adversário faz poucos gols
         const oppGoalsPer90 = oppFbref.standard?.for?.goals_per90 || 1.2;
         const myCSPct = (myFbref.keepers?.for?.gk_clean_sheets_pct || 20) / 100;
-        if (oppGoalsPer90 < 1.0) expected *= 1 + myCSPct * 0.15; // SG provável
+        if (oppGoalsPer90 < 1.0) matchupBonus += myCSPct * 0.10;
 
-        // Adversário tem baixa conversão de finalizações
+        // Adversário desperdiça finalizações
         const oppConversion = oppFbref.shooting?.for?.goals_per_shot_on_target || 0.3;
-        if (oppConversion < 0.25) expected *= 1.05;
+        if (oppConversion < 0.25) matchupBonus += 0.03;
       }
 
       // 2. Defensores (ZAG/LAT)
@@ -173,85 +181,161 @@ export const generateProjections = (
         // Desarmes: adversário perde muita posse
         const oppTacklesConceded = (oppFbref.misc?.against?.tackles_won || 80) / oppGames;
         const myTackles = (myFbref.misc?.for?.tackles_won || 80) / myGames;
-        if (oppTacklesConceded > 9.5) expected *= 1.06;
-        if (myTackles > 9.5) expected *= 1.04;
+        if (oppTacklesConceded > 9.5) matchupBonus += 0.04;
+        if (myTackles > 9.5) matchupBonus += 0.03;
 
         // Interceptações do meu time
         const myInt = (myFbref.misc?.for?.interceptions || 60) / myGames;
-        if (myInt > 7) expected *= 1.04;
+        if (myInt > 7) matchupBonus += 0.03;
 
         // SG opportunity: adversário faz poucos gols
         const oppGoalsPer90 = oppFbref.standard?.for?.goals_per90 || 1.2;
-        if (oppGoalsPer90 < 1.0) expected *= 1.08;
-        else if (oppGoalsPer90 < 1.2) expected *= 1.04;
+        if (oppGoalsPer90 < 1.0) matchupBonus += 0.06;
+        else if (oppGoalsPer90 < 1.2) matchupBonus += 0.03;
 
         // Clean sheet % do meu time
         const myCSPct = myFbref.keepers?.for?.gk_clean_sheets_pct || 20;
-        expected *= 1 + (myCSPct - 20) / 100 * 0.08;
+        matchupBonus += (myCSPct - 20) / 100 * 0.05;
 
-        // Laterais: cruzamentos = mais chances de assistências
+        // Laterais: cruzamentos
         if (p.posicao_id === 2) {
           const myCrosses = (myFbref.misc?.for?.crosses || 100) / myGames;
-          if (myCrosses > 12) expected *= 1.04;
+          if (myCrosses > 12) matchupBonus += 0.03;
         }
       }
 
       // 3. Meias (MEI)
       if (p.posicao_id === 4) {
-        // Adversário comete muitas faltas (FS points)
+        // Adversário comete muitas faltas (FS)
         const oppFouls = (oppFbref.misc?.for?.fouls || 130) / oppGames;
-        if (oppFouls > 15) expected *= 1.08;
-        else if (oppFouls > 13) expected *= 1.04;
+        if (oppFouls > 15) matchupBonus += 0.05;
+        else if (oppFouls > 13) matchupBonus += 0.03;
 
-        // Adversário perde muita posse (DS opportunities)
+        // Adversário perde muita posse (DS)
         const oppTacklesConceded = (oppFbref.misc?.against?.tackles_won || 80) / oppGames;
-        if (oppTacklesConceded > 9.5) expected *= 1.06;
+        if (oppTacklesConceded > 9.5) matchupBonus += 0.04;
 
-        // Posse de bola do meu time = mais tempo de jogo efetivo
+        // Posse de bola = mais tempo efetivo
         const myPossession = myFbref.possession?.for?.possession || myFbref.standard?.for?.possession || 50;
-        expected *= 1 + (myPossession - 50) * 0.003;
+        matchupBonus += (myPossession - 50) * 0.002;
 
-        // Assistências: meu time finaliza muito = meias criam
+        // Meu time finaliza muito = meias criam
         const mySoT = (myFbref.shooting?.for?.shots_on_target || 40) / myGames;
-        if (mySoT > 4.5) expected *= 1.03;
+        if (mySoT > 4.5) matchupBonus += 0.02;
       }
 
       // 4. Atacantes (ATA)
       if (p.posicao_id === 5) {
-        // Acurácia de finalização do meu time × fraqueza do goleiro adversário
+        // Acurácia de finalização × fraqueza do GK adversário
         const myShotAcc = (myFbref.shooting?.for?.shots_on_target_pct || 33) / 100;
         const oppGkSavePct = (oppFbref.keepers?.for?.gk_save_pct || 70) / 100;
         const goalProbability = myShotAcc * (1.5 - oppGkSavePct);
-        expected *= (1 + goalProbability * 0.3);
+        matchupBonus += goalProbability * 0.20;
 
         // Adversário sofre muitos gols
         const oppGAPer90 = oppFbref.keepers?.for?.gk_goals_against_per90 || 1.2;
-        if (oppGAPer90 > 1.5) expected *= 1.12;
-        else if (oppGAPer90 > 1.3) expected *= 1.06;
+        if (oppGAPer90 > 1.5) matchupBonus += 0.07;
+        else if (oppGAPer90 > 1.3) matchupBonus += 0.04;
 
         // Adversário toma muitos chutes (defesa porosa)
         const oppShotsAgainst = (oppFbref.shooting?.against?.shots_on_target || 40) / oppGames;
-        if (oppShotsAgainst > 4.5) expected *= 1.04;
+        if (oppShotsAgainst > 4.5) matchupBonus += 0.03;
 
-        // Adversário tem poucos desarmes (facilidade de progressão)
+        // Adversário tem poucos desarmes
         const oppTackles = (oppFbref.misc?.for?.tackles_won || 80) / oppGames;
-        if (oppTackles < 7.5) expected *= 1.04;
+        if (oppTackles < 7.5) matchupBonus += 0.03;
 
-        // Cruzamentos do meu time → gols de cabeça
+        // Cruzamentos do meu time
         const myCrosses = (myFbref.misc?.for?.crosses || 100) / myGames;
-        if (myCrosses > 14) expected *= 1.03;
+        if (myCrosses > 14) matchupBonus += 0.02;
       }
     }
 
-    // --- Consistência do jogador (penaliza alta variância) ---
+    // --- Perfil de Scout Individual do Jogador (acumula no mesmo matchupBonus) ---
     const games = p.jogos_num > 0 ? p.jogos_num : 1;
     if (p.scout) {
-      // Jogadores com muitos GS (gol sofrido) ou CV (cartão vermelho) são mais arriscados
+      // === BÔNUS POSITIVOS baseados no scout acumulado ===
+
+      // Goleadores: jogadores com alta taxa de gol recebem boost proporcional à fraqueza do adversário
+      if ([4, 5].includes(p.posicao_id)) {
+        const goalsPerGame = (p.scout.G || 0) / games;
+        if (goalsPerGame > 0.3) matchupBonus += 0.03; // Artilheiro consistente
+      }
+
+      // Assistentes: jogadores com alta taxa de assistência
+      if ([2, 4, 5].includes(p.posicao_id)) {
+        const assistsPerGame = (p.scout.A || 0) / games;
+        if (assistsPerGame > 0.2) matchupBonus += 0.02;
+      }
+
+      // Finalizadores: FD+FT valem muito (1.2 e 3.0 pts respectivamente)
+      if ([4, 5].includes(p.posicao_id)) {
+        const fdPerGame = (p.scout.FD || 0) / games; // Finalização defendida: +1.2pts
+        const ftPerGame = (p.scout.FT || 0) / games; // Finalização na trave: +3.0pts!
+        if (fdPerGame > 0.5) matchupBonus += 0.01;
+        if (ftPerGame > 0.15) matchupBonus += 0.02; // FT vale muito no Cartola
+      }
+
+      // Desarme alto: jogadores que desarmam muito individualmente
+      if ([2, 3, 4].includes(p.posicao_id)) {
+        const dsPerGame = (p.scout.DS || 0) / games;
+        if (dsPerGame > 1.5) matchupBonus += 0.02;
+      }
+
+      // Defesas (goleiros): alta taxa de DE individual
+      if (p.posicao_id === 1) {
+        const dePerGame = (p.scout.DE || 0) / games;
+        if (dePerGame > 2.5) matchupBonus += 0.03;
+      }
+
+      // Caça-Faltas individual: FS gera 0.5pts passivos
+      if ([4, 5].includes(p.posicao_id)) {
+        const fsPerGame = (p.scout.FS || 0) / games;
+        if (fsPerGame > 1.5) matchupBonus += 0.02;
+      }
+
+      // Vitórias: scout V indica time vencedor → bônus indireto de +1pt por vitória
+      const vPerGame = (p.scout.V || 0) / games;
+      if (vPerGame > 0.5) matchupBonus += 0.01; // Time que vence bastante
+
+      // === PENALIDADES baseadas em scouts negativos ===
       const gsPerGame = (p.scout.GS || 0) / games;
-      const negativesPerGame = ((p.scout.CA || 0) + (p.scout.FC || 0) * 0.5) / games;
-      if (gsPerGame > 1.5 && [1, 2, 3].includes(p.posicao_id)) expected *= 0.95;
-      if (negativesPerGame > 1.5) expected *= 0.97;
+      const caPerGame = (p.scout.CA || 0) / games;
+      const fcPerGame = (p.scout.FC || 0) / games;
+      const cvPerGame = ((p.scout.CV || 0) + (p.scout.CR || 0)) / games;
+      const gcPerGame = (p.scout.GC || 0) / games;
+      const ppPerGame = (p.scout.PP || 0) / games;
+      const iPerGame = (p.scout.I || 0) / games;
+      const pcPerGame = (p.scout.PC || 0) / games;
+
+      // Gol sofrido (GOL/ZAG/LAT) — muito impactante (-1.0pt cada)
+      if (gsPerGame > 1.5 && [1, 2, 3].includes(p.posicao_id)) matchupBonus -= 0.04;
+
+      // Cartão amarelo alto = risco de expulsão + perda de -1.0pt
+      if (caPerGame > 0.4) matchupBonus -= 0.03;
+
+      // Cartão vermelho: -3.0pts + sai do jogo
+      if (cvPerGame > 0.05) matchupBonus -= 0.04;
+
+      // Falta cometida alta (-0.3pt cada)
+      if (fcPerGame > 2.0) matchupBonus -= 0.02;
+
+      // Gol contra: -3.0pts (raro mas catastrófico)
+      if (gcPerGame > 0.05) matchupBonus -= 0.02;
+
+      // Pênalti perdido: -4.0pts (catastrófico)
+      if (ppPerGame > 0.05) matchupBonus -= 0.03;
+
+      // Pênalti cometido: -1.0pt
+      if (pcPerGame > 0.1) matchupBonus -= 0.02;
+
+      // Impedimento: -0.1pt (baixo impacto mas indica posicionamento ruim)
+      if (iPerGame > 0.5) matchupBonus -= 0.01;
     }
+
+    // Aplica matchup bonus total (FBref + scout individual) com cap ±18%
+    matchupBonus = Math.max(-0.18, Math.min(0.18, matchupBonus));
+    expected *= (1 + matchupBonus);
 
     // Aplica o Peso Dinâmico Aprendido da Posição
     const posMultiplier = weights.positionMultipliers[p.posicao_id] || 1.0;
@@ -261,6 +345,38 @@ export const generateProjections = (
     if (expected < 0) expected = 0.5;
     if (expected > 20) expected = 20;
 
+    // --- Cálculo de Confiança ---
+    // Quanto mais fatores positivos alinham, mais confiança na projeção
+    let confidence = 0.5; // Base: 50%
+
+    // Mais jogos = mais dados = mais confiança
+    confidence += Math.min(0.15, games / 30 * 0.15);
+
+    // Matchup claro (bônus forte ou penalidade forte) = mais confiança na direção
+    confidence += Math.min(0.10, Math.abs(matchupBonus) * 0.5);
+
+    // Time em boa forma = padrão mais previsível
+    if (myFbref?.overall?.last_5) {
+      const last5 = myFbref.overall.last_5 as string;
+      const consistent = (last5.match(/W/g) || []).length >= 4 || (last5.match(/L/g) || []).length >= 4;
+      if (consistent) confidence += 0.10; // Time com padrão claro
+    }
+
+    // Jogador sem scouts negativos excessivos = mais previsível
+    if (p.scout) {
+      const totalNegatives = (p.scout.CA || 0) + (p.scout.CV || 0) + (p.scout.CR || 0) + (p.scout.GC || 0);
+      const negPerGame = totalNegatives / games;
+      if (negPerGame < 0.3) confidence += 0.05;
+      else if (negPerGame > 1.0) confidence -= 0.10;
+    }
+
+    confidence = Math.max(0.15, Math.min(0.95, confidence));
+
+    // Floor/Ceiling: baseado na média ± desvio estimado
+    const estimatedStdDev = expected * (1 - confidence) * 1.5;
+    const ceiling = Math.round((expected + estimatedStdDev) * 100) / 100;
+    const floor = Math.round(Math.max(0, expected - estimatedStdDev) * 100) / 100;
+
     projections.push({
       atleta_id: p.atleta_id,
       apelido: p.apelido,
@@ -269,7 +385,10 @@ export const generateProjections = (
       foto: p.foto,
       media_base: p.media_num,
       rodada: matches.rodada,
-      expected_points: Math.round(expected * 100) / 100
+      expected_points: Math.round(expected * 100) / 100,
+      confidence: Math.round(confidence * 100) / 100,
+      ceiling,
+      floor
     });
   });
 
@@ -286,6 +405,11 @@ export const generateProjections = (
     const posMultiplier = weights.positionMultipliers[coach.posicao_id] || 1.0;
     expected *= posMultiplier;
 
+    // Confiança do técnico: média da confiança dos jogadores do time
+    const teamConfidence = teamProjections.length > 0
+      ? teamProjections.reduce((acc, t) => acc + t.confidence, 0) / teamProjections.length
+      : 0.4;
+
     projections.push({
       atleta_id: coach.atleta_id,
       apelido: coach.apelido,
@@ -294,7 +418,10 @@ export const generateProjections = (
       foto: coach.foto,
       media_base: coach.media_num,
       rodada: matches.rodada,
-      expected_points: Math.round(expected * 100) / 100
+      expected_points: Math.round(expected * 100) / 100,
+      confidence: Math.round(teamConfidence * 100) / 100,
+      ceiling: Math.round(expected * 1.3 * 100) / 100,
+      floor: Math.round(Math.max(0, expected * 0.7) * 100) / 100
     });
   });
 
@@ -343,30 +470,59 @@ export const evaluateRound = (
 
   if (count === 0) return null;
   const mae = Math.round((totalError / count) * 100) / 100;
+
+  // --- RMSE (Root Mean Squared Error) — penaliza erros grandes ---
+  const squaredErrors = details.reduce((acc, d) => acc + d.error * d.error, 0);
+  const rmse = Math.round(Math.sqrt(squaredErrors / count) * 100) / 100;
+
+  // --- Acurácia direcional: % de vezes que acertamos se vai pontuar acima/abaixo da média ---
+  let directionalCorrect = 0;
+  details.forEach(d => {
+    const predictedAboveAvg = d.expected > 5;
+    const actualAboveAvg = d.actual > 5;
+    if (predictedAboveAvg === actualAboveAvg) directionalCorrect++;
+  });
+  const directionalAccuracy = Math.round((directionalCorrect / count) * 100);
+
   const adjustments: string[] = [];
   const currentWeights = getWeights();
-  const LEARNING_RATE = 0.02;
 
+  // --- LEARNING RATE ADAPTATIVO ---
+  // Quanto maior o erro, mais agressiva a correção. Quanto mais dados, mais confiança.
   Object.entries(errorsByPos).forEach(([posId, stats]) => {
-    if (stats.count > 5) {
+    if (stats.count >= 3) {
       const avgError = stats.sum / stats.count;
-      let adjustmentDelta = (avgError * -1) * LEARNING_RATE; 
-      if (adjustmentDelta > 0.1) adjustmentDelta = 0.1;
-      if (adjustmentDelta < -0.1) adjustmentDelta = -0.1;
+      const errorMagnitude = Math.abs(avgError);
 
-      if (Math.abs(avgError) > 1.5) {
+      // Taxa adaptativa: mais dados = mais confiança, mais erro = correção mais forte
+      const sampleConfidence = Math.min(1, stats.count / 15); // Normaliza até 15 jogadores
+      const errorUrgency = Math.min(1, errorMagnitude / 3); // Normaliza até 3pts de erro
+      const adaptiveRate = 0.01 + (0.04 * sampleConfidence * errorUrgency); // 1% a 5%
+
+      let adjustmentDelta = (avgError * -1) * adaptiveRate;
+      adjustmentDelta = Math.max(-0.12, Math.min(0.12, adjustmentDelta));
+
+      // Threshold adaptativo: com poucos dados, só ajusta erros maiores
+      const threshold = stats.count >= 8 ? 1.0 : 1.5;
+
+      if (errorMagnitude > threshold) {
         currentWeights.positionMultipliers[Number(posId)] += adjustmentDelta;
+        // Clamp position multipliers para nunca sair do razoável
+        currentWeights.positionMultipliers[Number(posId)] = Math.max(0.7, Math.min(1.3, currentWeights.positionMultipliers[Number(posId)]));
+
         adjustments.push(
-          avgError > 0 
-           ? `Superestimamos ${data.posicoes[posId]?.nome} em média ${avgError.toFixed(1)}pts. Peso reduzido.`
-           : `Subestimamos ${data.posicoes[posId]?.nome} em média ${Math.abs(avgError).toFixed(1)}pts. Peso aumentado.`
+          avgError > 0
+           ? `⬇️ Superestimamos ${data.posicoes[posId]?.nome} em ${avgError.toFixed(1)}pts (n=${stats.count}). Peso: ${currentWeights.positionMultipliers[Number(posId)].toFixed(3)} (Δ${adjustmentDelta.toFixed(3)})`
+           : `⬆️ Subestimamos ${data.posicoes[posId]?.nome} em ${Math.abs(avgError).toFixed(1)}pts (n=${stats.count}). Peso: ${currentWeights.positionMultipliers[Number(posId)].toFixed(3)} (Δ${adjustmentDelta.toFixed(3)})`
         );
       }
     }
   });
 
   if (adjustments.length > 0) saveWeights(currentWeights);
-  else adjustments.push("Modelo manteve alta precisão nesta rodada.");
+
+  // Métricas de avaliação expandidas
+  adjustments.unshift(`📊 MAE: ${mae} | RMSE: ${rmse} | Direção: ${directionalAccuracy}% (${directionalCorrect}/${count})`);
 
   const evaluation: MLEvaluation = {
     rodada,

@@ -1,19 +1,21 @@
 import { useState, useEffect } from 'react';
-import { CartolaData, CartolaMatches } from '../types';
+import { Player, CartolaData, CartolaMatches } from '../types';
 import { fetchPontuadosRodada } from '../services/api';
 import { generateProjections, evaluateRound, getProjections, getEvaluation, PlayerProjection, MLEvaluation } from '../services/mlEngine';
-import { BrainCircuit, TrendingUp, AlertTriangle, CheckCircle, RefreshCcw, Activity } from 'lucide-react';
+import { BrainCircuit, TrendingUp, AlertTriangle, CheckCircle, RefreshCcw, Activity, Coins } from 'lucide-react';
 
 interface Props {
   data: CartolaData;
   matches: CartolaMatches;
+  onPlayerClick?: (player: Player) => void;
 }
 
-export default function MachineLearningPanel({ data, matches }: Props) {
+export default function MachineLearningPanel({ data, matches, onPlayerClick }: Props) {
   const [projections, setProjections] = useState<PlayerProjection[]>([]);
   const [evaluation, setEvaluation] = useState<MLEvaluation | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeView, setActiveView] = useState<'projections' | 'evaluation'>('projections');
+  const [filterPos, setFilterPos] = useState<number>(0);
 
   useEffect(() => {
     // Carrega/Gera Projeções
@@ -48,6 +50,8 @@ export default function MachineLearningPanel({ data, matches }: Props) {
 
     checkPastRound();
   }, [matches.rodada, data, matches]);
+
+  const filteredProjections = projections.filter(p => filterPos === 0 || p.posicao_id === filterPos);
 
   const handleRegenerate = () => {
     setLoading(true);
@@ -104,35 +108,71 @@ export default function MachineLearningPanel({ data, matches }: Props) {
       {/* TELA DE PROJEÇÕES */}
       {!loading && activeView === 'projections' && (
         <div className="flex-1">
-           <div className="flex justify-between items-center mb-4">
-             <h3 className="text-lg font-bold text-gray-200">Pontos Esperados Calculados</h3>
-             <button onClick={handleRegenerate} className="text-xs flex items-center text-teal-400 hover:text-teal-300">
+           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+             <div className="flex flex-col gap-3">
+               <h3 className="text-lg font-bold text-gray-200">Pontos Esperados Calculados</h3>
+               
+               {/* Filtros de Posição */}
+               <div className="flex flex-wrap gap-2">
+                 {[{ id: 0, label: 'Todos' }, { id: 1, label: 'GOL' }, { id: 2, label: 'LAT' }, { id: 3, label: 'ZAG' }, { id: 4, label: 'MEI' }, { id: 5, label: 'ATA' }].map(pos => (
+                   <button
+                     key={pos.id}
+                     onClick={() => setFilterPos(pos.id)}
+                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                       filterPos === pos.id 
+                         ? 'bg-teal-600 border-teal-500 text-white shadow-lg shadow-teal-900/40' 
+                         : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
+                     }`}
+                   >
+                     {pos.label}
+                   </button>
+                 ))}
+               </div>
+             </div>
+
+             <button onClick={handleRegenerate} className="text-xs flex items-center text-teal-400 hover:text-teal-300 bg-teal-400/10 px-3 py-2 rounded-lg border border-teal-400/20">
                <RefreshCcw size={14} className="mr-1" /> Forçar Recálculo
              </button>
            </div>
            
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-             {projections.slice(0, 32).map((p, index) => {
+             {filteredProjections.slice(0, 32).map((p, index) => {
                 const clubEscudo = data.clubes[p.clube_id]?.escudos?.['60x60'];
+                const playerData = data.atletas.find(a => a.atleta_id === p.atleta_id);
+                
                 return (
-                 <div key={p.atleta_id} className="bg-gray-800 border border-teal-900/40 rounded-xl p-4 flex items-center space-x-4">
-                    <div className="relative">
+                  <div 
+                    key={p.atleta_id} 
+                    onClick={() => playerData && onPlayerClick?.(playerData)}
+                    className="bg-gray-800 border border-teal-900/40 rounded-xl p-4 flex items-center space-x-4 cursor-pointer hover:border-teal-500/50 hover:bg-gray-700/50 transition-all group group"
+                  >
+                    <div className="relative flex-shrink-0">
                       <img 
                         src={p.foto ? p.foto.replace('FORMATO', '140x140') : 'https://s3.amazonaws.com/escudos.cartolafc.globo.com/default-player.png'} 
                         alt={p.apelido} 
-                        className="w-12 h-12 rounded-full object-cover bg-gray-700" 
+                        className="w-12 h-12 rounded-full object-cover bg-gray-700 border-2 border-transparent group-hover:border-teal-500/50 transition-colors" 
                       />
                       {clubEscudo && <img src={clubEscudo} className="w-5 h-5 absolute -bottom-1 -right-1" />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-bold text-gray-100 truncate text-sm">{p.apelido}</div>
-                      <div className="text-xs text-gray-500">{data.posicoes[p.posicao_id]?.abreviacao} • Média Base: {Math.round(p.media_base * 100)/100}</div>
+                      <div className="font-bold text-gray-100 truncate text-sm group-hover:text-teal-400 transition-colors">{p.apelido}</div>
+                      <div className="text-xs text-gray-500 mb-1">{data.posicoes[p.posicao_id]?.abreviacao} • Média: {p.media_base.toFixed(2)}</div>
+                      {playerData && (
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-orange-400">
+                          <Coins size={10} />
+                          C$ {playerData.preco_num.toFixed(2)}
+                        </div>
+                      )}
                     </div>
-                    <div className="bg-gray-900 rounded px-2 py-1 border border-gray-700 text-center min-w-[50px]">
+                    <div className="bg-gray-900 rounded px-2 py-1 border border-gray-700 text-center min-w-[80px]">
                       <div className="text-xs text-gray-500 font-semibold mb-0.5">#{index+1}</div>
                       <div className="text-sm font-black text-teal-500">{p.expected_points.toFixed(1)}</div>
+                      <div className="text-[9px] text-gray-600">{(p.floor ?? 0).toFixed(1)} ~ {(p.ceiling ?? 0).toFixed(1)}</div>
+                      <div className={`text-[9px] font-bold ${(p.confidence ?? 0) > 0.7 ? 'text-green-500' : (p.confidence ?? 0) > 0.5 ? 'text-yellow-500' : 'text-red-500'}`}>
+                        {Math.round((p.confidence ?? 0) * 100)}% conf
+                      </div>
                     </div>
-                 </div>
+                  </div>
                 );
              })}
            </div>

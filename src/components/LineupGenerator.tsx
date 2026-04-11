@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { CartolaData, CartolaMatches, Player, PlayerMatchHistory } from '../types';
-import { buildBestTeam, FORMATIONS, FORMATION_IDS, ProjectedPlayer, TeamSelection } from '../utils/engine';
+import { buildBestTeam, findBestFormation, FORMATIONS, FORMATION_IDS, ProjectedPlayer, TeamSelection } from '../utils/engine';
 import { generateProjections, getProjections } from '../services/mlEngine';
 import { submitLineup } from '../services/api';
 import { AILineupResponse } from '../services/aiPrompts';
@@ -15,7 +15,7 @@ interface Props {
   onPlayerClick?: (player: Player) => void;
 }
 
-export default function LineupGenerator({ data, matches, manualAiLineup, onPlayerClick }: Props) {
+export default function LineupGenerator({ data, matches, manualAiLineup, history, onPlayerClick }: Props) {
   const [formation, setFormation] = useState<string>('4-3-3');
   const [budget, setBudget] = useState<number>(140);
   const [viewMode, setViewMode] = useState<'list' | 'pitch'>('pitch');
@@ -67,8 +67,8 @@ export default function LineupGenerator({ data, matches, manualAiLineup, onPlaye
     // O robô de Inteligência tenta montar considerando apenas Prováveis (status === 7) para titulares
     // Técnicos quase sempre têm status 7, mas garantimos que ele não será filtrado pela regra
     const safePlayers = engineProjected.filter(p => p.status_id === 7 || p.posicao_id === 6);
-    return buildBestTeam(safePlayers, formation, budget);
-  }, [engineProjected, formation, budget]);
+    return buildBestTeam(safePlayers, formation, budget, history);
+  }, [engineProjected, formation, budget, history]);
 
   const team = aiTeam || baseTeam;
 
@@ -298,6 +298,17 @@ export default function LineupGenerator({ data, matches, manualAiLineup, onPlaye
                   <option key={f} value={f}>{f}</option>
                 ))}
               </select>
+              <button
+                onClick={() => {
+                  const safePlayers = engineProjected.filter(p => p.status_id === 7 || p.posicao_id === 6);
+                  const best = findBestFormation(safePlayers, budget, history);
+                  setFormation(best.formation);
+                }}
+                className="ml-1 sm:ml-2 px-2 py-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded transition-colors"
+                title="Encontrar melhor formação automaticamente"
+              >
+                AUTO
+              </button>
             </div>
           </div>
         </div>

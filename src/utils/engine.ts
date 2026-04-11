@@ -53,18 +53,41 @@ const getMatchMultiplier = (
     multiplier = isHome ? 1.05 : 0.95;
   }
 
-  // --- Team form bonus (last 5 results) ---
-  if (myStats?.overall?.last_5) {
+  // --- Team form bonus (aproveitamento da API Cartola ou FBref last_5) ---
+  let formApplied = false;
+  if (match) {
+    // Primeiro tenta usar aproveitamento direto da API (mais atualizado)
+    const aproveitamento = isHome ? match.aproveitamento_mandante : match.aproveitamento_visitante;
+    if (aproveitamento && aproveitamento.length > 0) {
+      const wins = aproveitamento.filter(r => r === 'v').length;
+      const losses = aproveitamento.filter(r => r === 'd').length;
+      multiplier += (wins - losses) * 0.015;
+      formApplied = true;
+    }
+  }
+  if (!formApplied && myStats?.overall?.last_5) {
+    // Fallback para FBref last_5
     const last5 = myStats.overall.last_5 as string;
     const wins = (last5.match(/W/g) || []).length;
     const losses = (last5.match(/L/g) || []).length;
-    multiplier += (wins - losses) * 0.015; // +/- up to 7.5%
+    multiplier += (wins - losses) * 0.015;
   }
 
   // --- Clean sheet potential for home defenders ---
   if (isHome && [1, 2, 3].includes(p.posicao_id)) {
     const csPct = myStats?.keepers?.for?.gk_clean_sheets_pct || 0;
     multiplier += Math.min(csPct / 100 * 0.08, 0.08); // Up to 8% boost based on CS%
+  }
+
+  // --- Opponent league position (da API Cartola) ---
+  if (match) {
+    const opponentPos = isHome ? match.clube_visitante_posicao : match.clube_casa_posicao;
+    if (opponentPos) {
+      // Adversário no Z4 (17-20): boost ofensivo, adversário no G4 (1-4): penalidade
+      if (opponentPos >= 17) multiplier += 0.03;
+      else if (opponentPos >= 14) multiplier += 0.015;
+      else if (opponentPos <= 4) multiplier -= 0.02;
+    }
   }
 
   if (!myStats || !opponentStats) return multiplier;
@@ -205,12 +228,24 @@ export const calculateProjections = (
           else if (last2Avg < prev2Avg - 2) formMultiplier -= 0.05; // Tendência de queda
         }
 
+        // Contexto casa/fora do histórico: se o jogador tem padrão diferente jogando em casa vs fora
+        const match = matches.find((m) => m.clube_casa_id === p.clube_id || m.clube_visitante_id === p.clube_id);
+        const currentIsHome = match ? match.clube_casa_id === p.clube_id : null;
+        if (currentIsHome !== null && recent.length >= 2) {
+          const contextGames = recent.filter(h => h.isHome === currentIsHome);
+          if (contextGames.length >= 2) {
+            const contextAvg = contextGames.reduce((acc, h) => acc + h.pontos, 0) / contextGames.length;
+            // Se o jogador performa muito melhor/pior no contexto atual (casa/fora)
+            if (contextAvg > avgRecent + 2) formMultiplier += 0.05;
+            else if (contextAvg < avgRecent - 2) formMultiplier -= 0.05;
+          }
+        }
+
         // Misturamos a basePoints com a fase recente
         basePoints = (basePoints * 0.4) + (avgRecent * 0.6);
       }
 
-      // -- NEW: FINANCIAL BONUS --
-      // Bônus sutil se o mínimo para valorizar for muito amigável (garante que no mínimo ele vai te dar cartoletas)
+      // -- FINANCIAL BONUS --
       let financeBoost = 0;
       if (p.minimo_para_valorizar !== undefined && p.minimo_para_valorizar !== null) {
         if (p.minimo_para_valorizar <= 0) {
@@ -219,6 +254,19 @@ export const calculateProjections = (
            financeBoost = -0.5; // Difícil valorizar, risco maior
         }
       }
+
+      // -- MOMENTUM DO JOGADOR (última rodada + variação de preço) --
+      // pontos_num = pontos da última rodada, variacao_num = variação de preço
+      if (p.pontos_num > 0) {
+        // Jogador pontuou bem na última rodada → leve boost de confiança
+        if (p.pontos_num > basePoints + 3) formMultiplier += 0.03;
+        // Jogador fez pontuação negativa na última rodada → alerta
+        if (p.pontos_num < 0) formMultiplier -= 0.05;
+      }
+
+      // Variação de preço indica tendência do mercado (sabedoria coletiva)
+      if (p.variacao_num > 2) formMultiplier += 0.02; // Mercado valorizando muito
+      else if (p.variacao_num < -2) formMultiplier -= 0.02; // Mercado desvalorizando
 
       const matchMultiplier = getMatchMultiplier(p, matches, clubes);
       let projected = (basePoints * matchMultiplier * formMultiplier) + financeBoost;
@@ -257,7 +305,8 @@ export interface TeamSelection {
 export const buildBestTeam = (
   projectedPlayers: ProjectedPlayer[],
   formation: string,
-  budget: number = 9999
+  budget: number = 9999,
+  history: Record<number, PlayerMatchHistory[]> = {}
 ): TeamSelection => {
   const requirements = FORMATIONS[formation];
   if (!requirements) return { starters: [], reserves: [], captain: null };
@@ -353,15 +402,88 @@ export const buildBestTeam = (
     }
   });
 
-  // Select Captain (highest projected points among starters excluding coach)
+  // --- CAPITÃO INTELIGENTE ---
+  // Não é só quem projeta mais pontos — é quem tem melhor combo de:
+  // 1. Alta projeção (teto)
+  // 2. Alta consistência (baixa variância recente)
+  // 3. Bom matchup (multiplier alto)
+  // 4. Jogando em casa (bônus extra)
   let captain: ProjectedPlayer | null = null;
+  let bestCaptainScore = -Infinity;
+
   starters.forEach((p) => {
-    if (p.posicao_id !== 6) {
-      if (!captain || p.projectedPoints > captain.projectedPoints) {
-        captain = p;
+    if (p.posicao_id === 6) return; // Técnico não pode ser capitão
+
+    let captainScore = p.projectedPoints;
+
+    // Bônus por matchMultiplier alto (matchup favorável)
+    captainScore += (p.matchMultiplier - 1) * 3;
+
+    // Penalidade por alta variância recente (jogador imprevisível)
+    if (history) {
+      const playerHist = history[p.atleta_id];
+      if (playerHist && playerHist.length >= 3) {
+        const recent = playerHist.slice(0, 5);
+        const avgRecent = recent.reduce((acc, h) => acc + h.pontos, 0) / recent.length;
+        const variance = recent.reduce((acc, h) => acc + Math.pow(h.pontos - avgRecent, 2), 0) / recent.length;
+        const stdDev = Math.sqrt(variance);
+
+        // Consistência: stdDev baixo = confiável para capitão
+        if (stdDev < 2) captainScore += 0.5; // Super consistente
+        else if (stdDev > 5) captainScore -= 1.0; // Muito imprevisível
+
+        // Tendência positiva recente
+        if (recent.length >= 2 && recent[0].pontos > avgRecent + 1) captainScore += 0.3;
+
+        // Teto alto nos últimos jogos (capitão precisa de ceiling)
+        const maxRecent = Math.max(...recent.map(h => h.pontos));
+        if (maxRecent > 10) captainScore += 0.5; // Já mostrou que pode explodir
       }
+    }
+
+    if (captainScore > bestCaptainScore) {
+      bestCaptainScore = captainScore;
+      captain = p;
     }
   });
 
   return { starters, reserves, captain };
+};
+
+// --- SELEÇÃO AUTOMÁTICA DE FORMAÇÃO ---
+// Testa todas as formações e retorna a que dá mais pontos total
+export const findBestFormation = (
+  projectedPlayers: ProjectedPlayer[],
+  budget: number = 9999,
+  history: Record<number, PlayerMatchHistory[]> = {}
+): { formation: string; team: TeamSelection; totalPoints: number } => {
+  let best = { formation: '4-3-3', team: { starters: [], reserves: [], captain: null } as TeamSelection, totalPoints: -Infinity };
+
+  Object.keys(FORMATIONS).forEach(formation => {
+    const team = buildBestTeam(projectedPlayers, formation, budget, history);
+    const totalPoints = team.starters.reduce((acc, p) => acc + p.projectedPoints, 0)
+      + (team.captain ? team.captain.projectedPoints : 0); // Capitão pontua dobrado
+
+    // Bônus por stacking: jogadores do mesmo time ofensivo se beneficiam juntos
+    const teamCounts: Record<number, { count: number; avgPoints: number }> = {};
+    team.starters.forEach(p => {
+      if (!teamCounts[p.clube_id]) teamCounts[p.clube_id] = { count: 0, avgPoints: 0 };
+      teamCounts[p.clube_id].count++;
+      teamCounts[p.clube_id].avgPoints += p.projectedPoints;
+    });
+
+    let stackBonus = 0;
+    Object.values(teamCounts).forEach(tc => {
+      if (tc.count >= 3) stackBonus += 0.5; // 3+ jogadores do mesmo time = sinergia
+      if (tc.count >= 4) stackBonus += 1.0; // 4+ = sinergia forte
+    });
+
+    const adjustedTotal = totalPoints + stackBonus;
+
+    if (adjustedTotal > best.totalPoints) {
+      best = { formation, team, totalPoints: adjustedTotal };
+    }
+  });
+
+  return best;
 };

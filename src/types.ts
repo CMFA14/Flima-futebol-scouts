@@ -50,11 +50,13 @@ export interface Player {
   preco_num: number;
   variacao_num: number;
   media_num: number;
+  media_base_scout?: number; // Média calculada pelos scouts (pode diferir de media_num)
   jogos_num: number;
   clube_id: number;
   posicao_id: number;
   status_id: number;
   minimo_para_valorizar?: number;
+  gato_mestre?: boolean; // Indica se é "Gato Mestre" (bônus especial do Cartola)
   scout: Scout;
 }
 
@@ -81,6 +83,12 @@ export interface Match {
   partida_data: string;
   local: string;
   valida: boolean;
+  placar_oficial_mandante?: number | null; // Placar oficial (preenchido após o jogo)
+  placar_oficial_visitante?: number | null;
+  aproveitamento_mandante?: string[]; // Ex: ["v", "v", "d", "e", "v"] - últimos resultados
+  aproveitamento_visitante?: string[];
+  clube_casa_posicao?: number; // Posição na tabela
+  clube_visitante_posicao?: number;
 }
 
 export interface CartolaData {
