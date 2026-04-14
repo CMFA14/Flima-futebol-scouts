@@ -155,7 +155,7 @@ function App() {
             {activeTab === 'lineup' && <LineupGenerator data={data} matches={matches} manualAiLineup={manualAiResponse} onPlayerClick={setGlobalSelectedPlayer} history={playerHistory} />}
             {activeTab === 'scout' && <ScoutPanel data={data} onPlayerClick={setGlobalSelectedPlayer} />}
             {activeTab === 'risk' && <RiskPanel data={data} />}
-            {activeTab === 'table' && <LeagueTable data={data} />}
+            {activeTab === 'table' && <LeagueTable data={data} matches={matches} history={playerHistory} onPlayerClick={setGlobalSelectedPlayer} />}
             {/* ParciaisPanel fica sempre montado para preservar estado ao trocar de aba */}
             <div className={activeTab === 'parciais' ? '' : 'hidden'}>
               <ParciaisPanel data={data} onPlayerClick={setGlobalSelectedPlayer} />

@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { CartolaData, FBrefClubStats } from '../types';
+import { CartolaData, CartolaMatches, FBrefClubStats, Player, PlayerMatchHistory } from '../types';
 import { Trophy, Home, Plane, BarChart3 } from 'lucide-react';
 import fbrefDataRaw from '../data/fbref_data.json';
+import TeamModal from './TeamModal';
 
 const fbrefData = fbrefDataRaw as unknown as Record<string, FBrefClubStats>;
 
@@ -23,6 +24,9 @@ interface TableRow {
 
 interface Props {
   data: CartolaData;
+  matches: CartolaMatches;
+  history: Record<number, PlayerMatchHistory[]>;
+  onPlayerClick: (p: Player) => void;
 }
 
 function buildRows(filter: Filter): TableRow[] {
@@ -65,7 +69,6 @@ function buildRows(filter: Filter): TableRow[] {
         pts_avg: ha.away_points_avg || 0,
       };
     } else {
-      // Geral: soma casa + fora
       const hj = ha.home_games || 0;
       const aj = ha.away_games || 0;
       const j = hj + aj;
@@ -90,13 +93,13 @@ function buildRows(filter: Filter): TableRow[] {
     rows.push(row);
   });
 
-  // Ordena por pontos desc, saldo desc, gols pro desc
   rows.sort((a, b) => b.pts - a.pts || b.saldo - a.saldo || b.gols_pro - a.gols_pro);
   return rows;
 }
 
-export default function LeagueTable({ data }: Props) {
+export default function LeagueTable({ data, matches, history, onPlayerClick }: Props) {
   const [filter, setFilter] = useState<Filter>('geral');
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const rows = buildRows(filter);
 
   const filterButtons: { key: Filter; label: string; icon: typeof BarChart3 }[] = [
@@ -105,6 +108,11 @@ export default function LeagueTable({ data }: Props) {
     { key: 'fora', label: 'Fora', icon: Plane },
   ];
 
+  const handleTeamClick = (abbr: string) => {
+    const clubId = Object.keys(data.clubes).find(k => data.clubes[k].abreviacao === abbr);
+    if (clubId) setSelectedTeamId(Number(clubId));
+  };
+
   return (
     <div className="p-4 sm:p-6 h-full overflow-hidden flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-5 gap-4">
@@ -112,11 +120,10 @@ export default function LeagueTable({ data }: Props) {
           <Trophy className="text-orange-500 mr-3" size={28} />
           <div>
             <h2 className="text-2xl font-bold text-white">Classificação - Série A</h2>
-            <p className="text-gray-400 text-sm">Tabela atualizada via FBref</p>
+            <p className="text-gray-400 text-sm">Clique em um time para ver detalhes</p>
           </div>
         </div>
 
-        {/* Filtro Casa / Fora / Geral */}
         <div className="flex bg-gray-800 rounded-lg p-1 border border-gray-700">
           {filterButtons.map(({ key, label, icon: Icon }) => (
             <button
@@ -172,12 +179,16 @@ export default function LeagueTable({ data }: Props) {
                   : 0;
 
                 return (
-                  <tr key={row.abbr} className={`hover:bg-gray-700/30 transition-colors ${borderLeft}`}>
+                  <tr
+                    key={row.abbr}
+                    className={`hover:bg-gray-700/30 transition-colors cursor-pointer ${borderLeft}`}
+                    onClick={() => handleTeamClick(row.abbr)}
+                  >
                     <td className={`px-4 py-3 text-center ${positionColor}`}>{pos}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <img src={escudo} alt={row.nome} className="w-6 h-6 object-contain" />
-                        <span className="font-semibold text-white">{row.nome}</span>
+                        <span className="font-semibold text-white hover:text-orange-400 transition-colors">{row.nome}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-center font-bold text-white bg-gray-900/40">{row.pts}</td>
@@ -212,6 +223,18 @@ export default function LeagueTable({ data }: Props) {
           <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-red-500"></div> Rebaixamento</div>
         </div>
       </div>
+
+      {/* Team Modal */}
+      {selectedTeamId && (
+        <TeamModal
+          clubeId={selectedTeamId}
+          data={data}
+          matches={matches}
+          history={history}
+          onClose={() => setSelectedTeamId(null)}
+          onPlayerClick={onPlayerClick}
+        />
+      )}
     </div>
   );
 }
