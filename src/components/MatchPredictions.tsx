@@ -122,9 +122,11 @@ function predictMatch(
     awayDefenseQuality = 1 - (savePct - 68) * 0.003 - (intPer90 - 6.5) * 0.008;
   }
 
-  // --- Home/Away splits from FBref ---
+  // --- Home/Away splits from FBref (ataque E defesa no contexto) ---
   let homeAdv = 1.12;
   let awayDis = 0.90;
+  let homeDefCtx = 1.0; // Fator defensivo do mandante em casa
+  let awayDefCtx = 1.0; // Fator defensivo do visitante fora
   if (homeFbref?.home_away) {
     const ha = homeFbref.home_away;
     const hg = ha.home_games || 0;
@@ -133,6 +135,10 @@ function predictMatch(
       const homeGF = (ha.home_goals_for || 0) / hg;
       const totalGF = ((ha.home_goals_for || 0) + (ha.away_goals_for || 0)) / (hg + ag);
       homeAdv = totalGF > 0 ? homeGF / totalGF : 1.12;
+      // Solidez defensiva em casa: menos gols sofridos em casa = fator < 1 (reduz lambda adversário)
+      const homeGA = (ha.home_goals_against || 0) / hg;
+      const totalGA = ((ha.home_goals_against || 0) + (ha.away_goals_against || 0)) / (hg + ag);
+      homeDefCtx = totalGA > 0 ? homeGA / totalGA : 1.0;
     }
   }
   if (awayFbref?.home_away) {
@@ -143,6 +149,10 @@ function predictMatch(
       const awayGF = (ha.away_goals_for || 0) / ag;
       const totalGF = ((ha.home_goals_for || 0) + (ha.away_goals_for || 0)) / (hg + ag);
       awayDis = totalGF > 0 ? awayGF / totalGF : 0.90;
+      // Solidez defensiva fora: mais gols sofridos fora = fator > 1 (aumenta lambda adversário)
+      const awayGA = (ha.away_goals_against || 0) / ag;
+      const totalGA = ((ha.home_goals_against || 0) + (ha.away_goals_against || 0)) / (hg + ag);
+      awayDefCtx = totalGA > 0 ? awayGA / totalGA : 1.0;
     }
   }
 
@@ -165,8 +175,10 @@ function predictMatch(
   // --- Expected goals (lambda) for Poisson ---
   // homeDefenseQuality < 1 means stronger defense → opponent scores less
   // awayDefenseQuality < 1 means stronger defense → opponent scores less
-  let lambdaHome = leagueAvgGoals * homeAttackStr * awayDefenseStr * homeAttackQuality * awayDefenseQuality * homeAdv * homeFormBonus;
-  let lambdaAway = leagueAvgGoals * awayAttackStr * homeDefenseStr * awayAttackQuality * homeDefenseQuality * awayDis * awayFormBonus;
+  // homeDefCtx < 1 = mandante forte em casa defensivamente → reduz gols do visitante
+  // awayDefCtx > 1 = visitante vulnerável fora → aumenta gols do mandante
+  let lambdaHome = leagueAvgGoals * homeAttackStr * awayDefenseStr * homeAttackQuality * awayDefenseQuality * homeAdv * homeFormBonus * awayDefCtx;
+  let lambdaAway = leagueAvgGoals * awayAttackStr * homeDefenseStr * awayAttackQuality * homeDefenseQuality * awayDis * awayFormBonus * homeDefCtx;
 
   lambdaHome = Math.max(0.3, Math.min(4.0, lambdaHome));
   lambdaAway = Math.max(0.3, Math.min(4.0, lambdaAway));

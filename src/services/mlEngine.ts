@@ -150,6 +150,48 @@ export const generateProjections = (
       expected *= 1 + (wins - losses) * 0.02; // até ±10%
     }
 
+    // --- Fator Ataque/Defesa contextual casa/fora (gols marcados/sofridos no contexto) ---
+    if (myFbref?.home_away && oppFbref?.home_away) {
+      const myHA = myFbref.home_away;
+      const oppHA = oppFbref.home_away;
+      const myCtxGames = matchData.isHome ? (myHA.home_games || 1) : (myHA.away_games || 1);
+      const oppCtxGames = matchData.isHome ? (oppHA.away_games || 1) : (oppHA.home_games || 1);
+
+      // Força ofensiva do meu time no contexto atual
+      const myGoalsCtx = matchData.isHome
+        ? (myHA.home_goals_for || 0) / myCtxGames
+        : (myHA.away_goals_for || 0) / myCtxGames;
+      // Vulnerabilidade defensiva do adversário no contexto oposto
+      const oppGACtx = matchData.isHome
+        ? (oppHA.away_goals_against || 0) / oppCtxGames
+        : (oppHA.home_goals_against || 0) / oppCtxGames;
+      // Força defensiva do meu time no contexto
+      const myGACtx = matchData.isHome
+        ? (myHA.home_goals_against || 0) / myCtxGames
+        : (myHA.away_goals_against || 0) / myCtxGames;
+      // Força ofensiva do adversário no contexto
+      const oppGoalsCtx = matchData.isHome
+        ? (oppHA.away_goals_for || 0) / oppCtxGames
+        : (oppHA.home_goals_for || 0) / oppCtxGames;
+      // Taxa de vitória no contexto → scout V (+1pt)
+      const myWinsCtx = matchData.isHome ? (myHA.home_wins || 0) : (myHA.away_wins || 0);
+      const winRateCtx = myWinsCtx / myCtxGames;
+
+      // Boost contextual para atacantes/meias
+      if ([4, 5].includes(p.posicao_id)) {
+        const ctxBonus = ((myGoalsCtx - 1.2) * 0.03) + ((oppGACtx - 1.2) * 0.03);
+        expected *= 1 + Math.max(-0.06, Math.min(0.08, ctxBonus));
+      }
+      // Boost contextual para defensores/goleiros
+      if ([1, 2, 3].includes(p.posicao_id)) {
+        const ctxBonus = ((1.2 - myGACtx) * 0.03) + ((1.2 - oppGoalsCtx) * 0.03);
+        expected *= 1 + Math.max(-0.06, Math.min(0.08, ctxBonus));
+      }
+      // Taxa de vitória no contexto afeta todos (scout V = +1pt)
+      if (winRateCtx > 0.6) expected *= 1.02;
+      else if (winRateCtx < 0.3) expected *= 0.98;
+    }
+
     // --- MATCHUP ADITIVO (evita acúmulo exponencial de multiplicadores) ---
     // Cada fator soma um bônus/penalidade ao matchupBonus, que é aplicado UMA vez no final
     let matchupBonus = 0;

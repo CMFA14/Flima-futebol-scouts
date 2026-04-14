@@ -90,6 +90,53 @@ const getMatchMultiplier = (
     }
   }
 
+  // --- Contexto casa/fora: gols marcados/sofridos e taxa de vitória no contexto ---
+  if (myStats?.home_away && opponentStats?.home_away) {
+    const myHA = myStats.home_away;
+    const oppHA = opponentStats.home_away;
+    const myCtxGames = isHome ? (myHA.home_games || 1) : (myHA.away_games || 1);
+    const oppCtxGames = isHome ? (oppHA.away_games || 1) : (oppHA.home_games || 1);
+
+    // Força ofensiva do meu time no contexto (casa ou fora)
+    const myGoalsCtx = isHome
+      ? (myHA.home_goals_for || 0) / myCtxGames
+      : (myHA.away_goals_for || 0) / myCtxGames;
+    // Vulnerabilidade defensiva do adversário no contexto oposto
+    const oppGACtx = isHome
+      ? (oppHA.away_goals_against || 0) / oppCtxGames
+      : (oppHA.home_goals_against || 0) / oppCtxGames;
+    // Força defensiva do meu time no contexto
+    const myGACtx = isHome
+      ? (myHA.home_goals_against || 0) / myCtxGames
+      : (myHA.away_goals_against || 0) / myCtxGames;
+    // Força ofensiva do adversário no contexto
+    const oppGoalsCtx = isHome
+      ? (oppHA.away_goals_for || 0) / oppCtxGames
+      : (oppHA.home_goals_for || 0) / oppCtxGames;
+    // Taxa de vitória no contexto
+    const myWinsCtx = isHome ? (myHA.home_wins || 0) : (myHA.away_wins || 0);
+    const winRateCtx = myWinsCtx / myCtxGames;
+
+    // Atacantes/Meias: boost proporcional à força ofensiva e fraqueza defensiva do adversário
+    if ([4, 5].includes(p.posicao_id)) {
+      const ctxBonus = ((myGoalsCtx - 1.2) * 0.025) + ((oppGACtx - 1.2) * 0.025);
+      multiplier += Math.max(-0.06, Math.min(0.07, ctxBonus));
+    }
+    // Defensores/Goleiros: boost proporcional à solidez defensiva e fraqueza ofensiva do adversário
+    if ([1, 2, 3].includes(p.posicao_id)) {
+      const ctxBonus = ((1.2 - myGACtx) * 0.025) + ((1.2 - oppGoalsCtx) * 0.025);
+      multiplier += Math.max(-0.06, Math.min(0.07, ctxBonus));
+    }
+    // Taxa de vitória no contexto → bônus scout V (+1pt) para todos
+    if (winRateCtx > 0.6) multiplier += 0.02;
+    else if (winRateCtx < 0.3) multiplier -= 0.02;
+
+    // Saldo de gols no contexto → indicador geral de dominância
+    const myGDCtx = isHome ? (myHA.home_goal_diff || 0) : (myHA.away_goal_diff || 0);
+    const gdPerGame = myGDCtx / myCtxGames;
+    multiplier += Math.max(-0.03, Math.min(0.03, gdPerGame * 0.015));
+  }
+
   if (!myStats || !opponentStats) return multiplier;
 
   const games = myStats.overall?.games || 10;
