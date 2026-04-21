@@ -163,7 +163,21 @@ export default function LeagueTable({ data, matches, history, onPlayerClick }: P
             <tbody className="divide-y divide-gray-700/50">
               {rows.map((row, idx) => {
                 const pos = idx + 1;
-                const cartolaClubId = Object.keys(data.clubes).find(k => data.clubes[k].abreviacao === row.abbr);
+                const fbrefToCartola: Record<string, string> = {
+                  'Coritiba': 'CFC',
+                  'RB Bragantino': 'RBB',
+                  'Bragantino': 'RBB',
+                  'Santos': 'SAN',
+                  'Mirassol': 'MIR',
+                  'Remo': 'REM',
+                  'Chapecoense': 'CHA',
+                  'Botafogo (RJ)': 'BOT',
+                  'Vasco da Gama': 'VAS'
+                };
+
+                const normalizedAbbr = fbrefToCartola[row.abbr] || row.abbr;
+                const cartolaClubId = Object.keys(data.clubes).find(k => data.clubes[k].abreviacao === normalizedAbbr);
+                
                 const club = cartolaClubId ? data.clubes[cartolaClubId] : null;
                 const escudo = club?.escudos?.['30x30'] || 'https://s3.amazonaws.com/escudos.cartolafc.globo.com/default.png';
 

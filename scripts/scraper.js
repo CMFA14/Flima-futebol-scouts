@@ -16,6 +16,7 @@ const TEAM_MAP = {
     "Internacional": "INT",
     "Athletico Paranaense": "CAP",
     "Athletico": "CAP",
+    "Athletico-PR": "CAP",
     "Fortaleza": "FOR",
     "Corinthians": "COR",
     "Cruzeiro": "CRU",
@@ -28,7 +29,8 @@ const TEAM_MAP = {
     "Atlético Goianiense": "ACG",
     "Cuiabá": "CUI",
     "Red Bull Bragantino": "RBB",
-    "Bragantino": "RBB"
+    "Bragantino": "RBB",
+    "RB Bragantino": "RBB"
 };
 
 const BASE_URL = 'https://fbref.com/en/comps/24';
