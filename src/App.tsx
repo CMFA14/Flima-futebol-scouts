@@ -164,7 +164,7 @@ function App() {
             {activeTab === 'golden-tips' && <GoldenTips data={data} matches={matches} onPlayerClick={setGlobalSelectedPlayer} history={playerHistory} />}
             {activeTab === 'betting' && <BettingTips data={data} matches={matches} manualBettingTips={manualBettingResponse} />}
             {activeTab === 'lineups' && <TeamLineups data={data} matches={matches} onPlayerClick={setGlobalSelectedPlayer} />}
-            {activeTab === 'prompt' && <AIPromptTab data={data} matches={matches} onApplyLineup={(res) => {
+            {activeTab === 'prompt' && <AIPromptTab data={data} matches={matches} history={playerHistory} onApplyLineup={(res) => {
               setManualAiResponse(res);
               setActiveTab('lineup');
             }} onApplyBettingTips={(res) => {

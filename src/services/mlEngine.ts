@@ -4,6 +4,7 @@ import fbrefDataRaw from '../data/fbref_data.json';
 const fbrefData = fbrefDataRaw as Record<string, FBrefClubStats>;
 
 export interface MLWeights {
+  version?: number;
   homeAdvantage: number;
   positionMultipliers: Record<number, number>;
   defenseForm: number; // Peso da defesa adversária
@@ -39,11 +40,16 @@ export interface MLEvaluation {
 
 const STORAGE_KEYS = {
   WEIGHTS: 'cartola_ml_weights',
-  PROJECTIONS: 'cartola_ml_projections_v2_',
-  EVALUATIONS: 'cartola_ml_evaluations_v2_'
+  PROJECTIONS: 'cartola_ml_projections_v3_',
+  EVALUATIONS: 'cartola_ml_evaluations_v3_'
 };
 
+// Versão dos pesos; ao incrementar, pesos antigos no localStorage são descartados
+// para evitar projeções geradas por um conjunto de pesos em avaliação de outro.
+const WEIGHTS_VERSION = 2;
+
 const DEFAULT_WEIGHTS: MLWeights = {
+  version: WEIGHTS_VERSION,
   homeAdvantage: 1.15,
   positionMultipliers: {
     1: 1.0, // GOL
@@ -57,19 +63,24 @@ const DEFAULT_WEIGHTS: MLWeights = {
   attackForm: 1.0
 };
 
-// Helper: load weights
+// Helper: load weights (descarta pesos de versão anterior para evitar
+// mistura entre conjunto antigo e nova função de projeção)
 export const getWeights = (): MLWeights => {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.WEIGHTS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw) as MLWeights;
+      if ((parsed.version || 0) === WEIGHTS_VERSION) return parsed;
+    }
   } catch (e) {
     console.error("Error loading ML weights", e);
   }
-  return DEFAULT_WEIGHTS;
+  return { ...DEFAULT_WEIGHTS };
 };
 
 // Helper: save weights
 export const saveWeights = (weights: MLWeights) => {
+  weights.version = WEIGHTS_VERSION;
   localStorage.setItem(STORAGE_KEYS.WEIGHTS, JSON.stringify(weights));
 };
 
@@ -94,11 +105,13 @@ export const generateProjections = (
   const validMatches = matches.partidas.filter((m) => m.valida);
   const projections: PlayerProjection[] = [];
 
-  // Cria um index rápido de oponentes
-  const opponentMap: Record<number, { isHome: boolean; opponentId: number }> = {};
+  // Cria um index rápido de oponentes. Um clube pode ter mais de um jogo na
+  // mesma "rodada" em casos de jogo adiado — armazenamos todos e, quando
+  // houver múltiplos, calculamos a média dos efeitos depois.
+  const opponentMap: Record<number, { isHome: boolean; opponentId: number }[]> = {};
   validMatches.forEach(m => {
-    opponentMap[m.clube_casa_id] = { isHome: true, opponentId: m.clube_visitante_id };
-    opponentMap[m.clube_visitante_id] = { isHome: false, opponentId: m.clube_casa_id };
+    (opponentMap[m.clube_casa_id] ||= []).push({ isHome: true, opponentId: m.clube_visitante_id });
+    (opponentMap[m.clube_visitante_id] ||= []).push({ isHome: false, opponentId: m.clube_casa_id });
   });
 
   // Filtramos jogadores prováveis (status 7) e dúvidas (status 2)
@@ -108,8 +121,12 @@ export const generateProjections = (
     // Ignora técnicos na primeira passada, pois eles dependem da projeção dos outros jogadores
     if (p.posicao_id === 6) return;
 
-    const matchData = opponentMap[p.clube_id];
-    if (!matchData) return; // Não tem partida válida
+    const clubMatches = opponentMap[p.clube_id];
+    if (!clubMatches || clubMatches.length === 0) return; // Não tem partida válida
+    // Caso raro de rodada dupla: usa o primeiro jogo para os multiplicadores,
+    // mas escala o expected_points final pelo número de jogos.
+    const matchData = clubMatches[0];
+    const matchCount = clubMatches.length;
 
     // Começamos o cálculo pela média base do jogador (preferindo a média por scouts quando disponível)
     let expected = p.media_base_scout || p.media_num;
@@ -414,6 +431,12 @@ export const generateProjections = (
 
     confidence = Math.max(0.15, Math.min(0.95, confidence));
 
+    // Rodada dupla: múltiplos jogos somam pontuação (mais jogos = mais variância)
+    if (matchCount > 1) {
+      expected *= matchCount;
+      confidence = Math.max(0.15, confidence - 0.05 * (matchCount - 1));
+    }
+
     // Floor/Ceiling: baseado na média ± desvio estimado
     const estimatedStdDev = expected * (1 - confidence) * 1.5;
     const ceiling = Math.round((expected + estimatedStdDev) * 100) / 100;
@@ -487,26 +510,42 @@ export const evaluateRound = (
     4:{sum:0, count:0}, 5:{sum:0, count:0}, 6:{sum:0, count:0}
   };
 
+  // Thresholds de "acima da média" por posição (pts). Usa o que é observado
+  // no Cartola como divisor entre jogo mediano e jogo bom por posição.
+  const ABOVE_AVG_THRESHOLD: Record<number, number> = {
+    1: 4.5, // GOL
+    2: 4.0, // LAT
+    3: 4.0, // ZAG
+    4: 5.0, // MEI
+    5: 5.5, // ATA
+    6: 4.0, // TEC
+  };
+
   projections.forEach(proj => {
     const realPtsData = Object.values(pontuados).find(p => p.apelido === proj.apelido && p.clube_id === proj.clube_id) || pontuados[proj.atleta_id];
-    if (realPtsData && realPtsData.entrou_em_campo) {
-      const realPoints = typeof realPtsData.pontuacao === 'number' ? realPtsData.pontuacao : parseFloat(realPtsData.pontuacao) || 0;
-      const error = proj.expected_points - realPoints;
-      totalError += Math.abs(error);
-      count++;
-      
-      details.push({
-        atleta_id: proj.atleta_id,
-        apelido: proj.apelido,
-        expected: proj.expected_points,
-        actual: realPoints,
-        error: Math.round(error * 100) / 100
-      });
+    // Apenas jogadores que entraram em campo são avaliados: quem decide
+    // "provável" é o próprio Cartola, então erros de presença em campo
+    // (lesão de última hora, decisão técnica) não devem penalizar o motor.
+    if (!realPtsData || !realPtsData.entrou_em_campo) return;
 
-      if (errorsByPos[proj.posicao_id]) {
-        errorsByPos[proj.posicao_id].sum += error;
-        errorsByPos[proj.posicao_id].count++;
-      }
+    const realPoints = typeof realPtsData.pontuacao === 'number'
+      ? realPtsData.pontuacao
+      : parseFloat(realPtsData.pontuacao) || 0;
+    const error = proj.expected_points - realPoints;
+    totalError += Math.abs(error);
+    count++;
+
+    details.push({
+      atleta_id: proj.atleta_id,
+      apelido: proj.apelido,
+      expected: proj.expected_points,
+      actual: realPoints,
+      error: Math.round(error * 100) / 100
+    });
+
+    if (errorsByPos[proj.posicao_id]) {
+      errorsByPos[proj.posicao_id].sum += error;
+      errorsByPos[proj.posicao_id].count++;
     }
   });
 
@@ -518,13 +557,30 @@ export const evaluateRound = (
   const rmse = Math.round(Math.sqrt(squaredErrors / count) * 100) / 100;
 
   // --- Acurácia direcional: % de vezes que acertamos se vai pontuar acima/abaixo da média ---
+  // Threshold agora é relativo à posição, não fixo em 5pts.
   let directionalCorrect = 0;
   details.forEach(d => {
-    const predictedAboveAvg = d.expected > 5;
-    const actualAboveAvg = d.actual > 5;
+    const proj = projections.find(p => p.atleta_id === d.atleta_id);
+    const threshold = proj ? (ABOVE_AVG_THRESHOLD[proj.posicao_id] || 5) : 5;
+    const predictedAboveAvg = d.expected > threshold;
+    const actualAboveAvg = d.actual > threshold;
     if (predictedAboveAvg === actualAboveAvg) directionalCorrect++;
   });
   const directionalAccuracy = Math.round((directionalCorrect / count) * 100);
+
+  // --- MAE por posição (para diagnóstico fino no UI) ---
+  const posNames: Record<number, string> = { 1: 'GOL', 2: 'LAT', 3: 'ZAG', 4: 'MEI', 5: 'ATA', 6: 'TEC' };
+  const maeByPos: string[] = [];
+  Object.entries(errorsByPos).forEach(([posId, stats]) => {
+    if (stats.count > 0) {
+      // stats.sum é soma dos erros com sinal; para MAE queremos valor absoluto
+      // mas aqui reportamos também viés (bias) para indicar tendência de over/under
+      const posDetails = details.filter(d => projections.find(p => p.atleta_id === d.atleta_id)?.posicao_id === Number(posId));
+      const posMae = posDetails.reduce((acc, d) => acc + Math.abs(d.error), 0) / stats.count;
+      const bias = stats.sum / stats.count;
+      maeByPos.push(`${posNames[Number(posId)]}: ${posMae.toFixed(2)} (viés ${bias >= 0 ? '+' : ''}${bias.toFixed(2)}, n=${stats.count})`);
+    }
+  });
 
   const adjustments: string[] = [];
   const currentWeights = getWeights();
@@ -564,6 +620,9 @@ export const evaluateRound = (
   if (adjustments.length > 0) saveWeights(currentWeights);
 
   // Métricas de avaliação expandidas
+  if (maeByPos.length > 0) {
+    adjustments.unshift(`📐 MAE por posição — ${maeByPos.join(' | ')}`);
+  }
   adjustments.unshift(`📊 MAE: ${mae} | RMSE: ${rmse} | Direção: ${directionalAccuracy}% (${directionalCorrect}/${count})`);
 
   const evaluation: MLEvaluation = {

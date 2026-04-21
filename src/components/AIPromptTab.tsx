@@ -1,28 +1,39 @@
 import { useState, useMemo } from 'react';
-import { CartolaData, CartolaMatches } from '../types';
+import { CartolaData, CartolaMatches, PlayerMatchHistory } from '../types';
 import { getLineupPrompt, getBettingTipsPrompt, AILineupResponse, BettingTipsResponse } from '../services/aiPrompts';
+import { generateProjections, getProjections, getEvaluation } from '../services/mlEngine';
+import { generateGoldenTips } from '../utils/crossStats';
 import { Bot, Copy, Check, Info, Upload, Users, DollarSign } from 'lucide-react';
 
 interface Props {
   data: CartolaData;
   matches: CartolaMatches;
+  history?: Record<number, PlayerMatchHistory[]>;
   onApplyLineup: (res: AILineupResponse) => void;
   onApplyBettingTips: (res: BettingTipsResponse) => void;
 }
 
-export default function AIPromptTab({ data, matches, onApplyLineup, onApplyBettingTips }: Props) {
+export default function AIPromptTab({ data, matches, history, onApplyLineup, onApplyBettingTips }: Props) {
   const [mode, setMode] = useState<'lineup' | 'betting'>('lineup');
   const [budget, setBudget] = useState<number>(140);
   const [copied, setCopied] = useState(false);
   const [jsonInput, setJsonInput] = useState('');
 
+  // Enriquecimento com dados do motor: projeções (ML), tips (crossStats) e avaliação anterior
+  const engineContext = useMemo(() => {
+    const projections = getProjections(matches.rodada) || generateProjections(data, matches);
+    const goldenTips = history ? generateGoldenTips(data.atletas, matches.partidas, data.clubes, history) : [];
+    const lastEvaluation = matches.rodada > 1 ? getEvaluation(matches.rodada - 1) : null;
+    return { projections, goldenTips, lastEvaluation, history };
+  }, [data, matches, history]);
+
   const promptText = useMemo(() => {
     if (mode === 'lineup') {
-      return getLineupPrompt(data, matches, budget);
+      return getLineupPrompt(data, matches, budget, engineContext);
     } else {
-      return getBettingTipsPrompt(data, matches);
+      return getBettingTipsPrompt(data, matches, engineContext);
     }
-  }, [data, matches, budget, mode]);
+  }, [data, matches, budget, mode, engineContext]);
 
   const handleCopy = async () => {
     try {

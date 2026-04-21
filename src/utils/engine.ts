@@ -288,8 +288,12 @@ export const calculateProjections = (
           }
         }
 
-        // Misturamos a basePoints com a fase recente
-        basePoints = (basePoints * 0.4) + (avgRecent * 0.6);
+        // Mistura base × forma recente com peso adaptativo.
+        // Início de temporada (poucos jogos) → menor peso na forma recente,
+        // pois a amostra é pequena. Já em campeonato avançado confiamos mais
+        // no padrão atual do que na média acumulada.
+        const formWeight = Math.min(0.65, 0.3 + (recent.length / 10)); // 0.3 → 0.65
+        basePoints = (basePoints * (1 - formWeight)) + (avgRecent * formWeight);
       }
 
       // -- FINANCIAL BONUS --
@@ -461,10 +465,12 @@ export const buildBestTeam = (
   starters.forEach((p) => {
     if (p.posicao_id === 6) return; // Técnico não pode ser capitão
 
+    // projectedPoints já inclui matchMultiplier e formMultiplier — não
+    // somamos matchMultiplier de novo (evita dupla contagem).
+    // O captainScore começa pelo que o jogador deve pontuar, e a partir
+    // daí aplicamos AJUSTES FINOS de risco/variância específicos do papel
+    // de capitão (cuja pontuação dobra).
     let captainScore = p.projectedPoints;
-
-    // Bônus por matchMultiplier alto (matchup favorável)
-    captainScore += (p.matchMultiplier - 1) * 3;
 
     // Penalidade por alta variância recente (jogador imprevisível)
     if (history) {

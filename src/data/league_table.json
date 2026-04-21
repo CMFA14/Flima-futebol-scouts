@@ -1,1 +1,222 @@
-[]
+[
+  {
+    "clube": "PAL",
+    "nome": "Palmeiras",
+    "posicao": 1,
+    "pts": 29,
+    "vitorias": 9,
+    "empates": 2,
+    "derrotas": 1,
+    "gols_pro": 22,
+    "gols_contra": 10
+  },
+  {
+    "clube": "FLA",
+    "nome": "Flamengo",
+    "posicao": 2,
+    "pts": 23,
+    "vitorias": 7,
+    "empates": 2,
+    "derrotas": 2,
+    "gols_pro": 20,
+    "gols_contra": 10
+  },
+  {
+    "clube": "FLU",
+    "nome": "Fluminense",
+    "posicao": 3,
+    "pts": 23,
+    "vitorias": 7,
+    "empates": 2,
+    "derrotas": 3,
+    "gols_pro": 21,
+    "gols_contra": 15
+  },
+  {
+    "clube": "SAO",
+    "nome": "São Paulo",
+    "posicao": 4,
+    "pts": 20,
+    "vitorias": 6,
+    "empates": 2,
+    "derrotas": 4,
+    "gols_pro": 16,
+    "gols_contra": 11
+  },
+  {
+    "clube": "BAH",
+    "nome": "Bahia",
+    "posicao": 5,
+    "pts": 20,
+    "vitorias": 6,
+    "empates": 2,
+    "derrotas": 3,
+    "gols_pro": 15,
+    "gols_contra": 12
+  },
+  {
+    "clube": "CAP",
+    "nome": "Athletico Paranaense",
+    "posicao": 6,
+    "pts": 19,
+    "vitorias": 6,
+    "empates": 1,
+    "derrotas": 5,
+    "gols_pro": 17,
+    "gols_contra": 14
+  },
+  {
+    "clube": "Coritiba",
+    "nome": "Coritiba",
+    "posicao": 7,
+    "pts": 19,
+    "vitorias": 5,
+    "empates": 4,
+    "derrotas": 3,
+    "gols_pro": 15,
+    "gols_contra": 12
+  },
+  {
+    "clube": "RB Bragantino",
+    "nome": "RB Bragantino",
+    "posicao": 8,
+    "pts": 17,
+    "vitorias": 5,
+    "empates": 2,
+    "derrotas": 5,
+    "gols_pro": 15,
+    "gols_contra": 14
+  },
+  {
+    "clube": "BOT",
+    "nome": "Botafogo (RJ)",
+    "posicao": 9,
+    "pts": 16,
+    "vitorias": 5,
+    "empates": 1,
+    "derrotas": 5,
+    "gols_pro": 22,
+    "gols_contra": 22
+  },
+  {
+    "clube": "VAS",
+    "nome": "Vasco da Gama",
+    "posicao": 10,
+    "pts": 16,
+    "vitorias": 4,
+    "empates": 4,
+    "derrotas": 4,
+    "gols_pro": 18,
+    "gols_contra": 18
+  },
+  {
+    "clube": "VIT",
+    "nome": "Vitória",
+    "posicao": 11,
+    "pts": 15,
+    "vitorias": 4,
+    "empates": 3,
+    "derrotas": 4,
+    "gols_pro": 11,
+    "gols_contra": 14
+  },
+  {
+    "clube": "CAM",
+    "nome": "Atlético Mineiro",
+    "posicao": 12,
+    "pts": 14,
+    "vitorias": 4,
+    "empates": 2,
+    "derrotas": 6,
+    "gols_pro": 14,
+    "gols_contra": 15
+  },
+  {
+    "clube": "GRE",
+    "nome": "Grêmio",
+    "posicao": 13,
+    "pts": 13,
+    "vitorias": 3,
+    "empates": 4,
+    "derrotas": 5,
+    "gols_pro": 14,
+    "gols_contra": 16
+  },
+  {
+    "clube": "INT",
+    "nome": "Internacional",
+    "posicao": 14,
+    "pts": 13,
+    "vitorias": 3,
+    "empates": 4,
+    "derrotas": 5,
+    "gols_pro": 10,
+    "gols_contra": 12
+  },
+  {
+    "clube": "Santos",
+    "nome": "Santos",
+    "posicao": 15,
+    "pts": 13,
+    "vitorias": 3,
+    "empates": 4,
+    "derrotas": 5,
+    "gols_pro": 16,
+    "gols_contra": 19
+  },
+  {
+    "clube": "CRU",
+    "nome": "Cruzeiro",
+    "posicao": 16,
+    "pts": 13,
+    "vitorias": 3,
+    "empates": 4,
+    "derrotas": 5,
+    "gols_pro": 16,
+    "gols_contra": 21
+  },
+  {
+    "clube": "COR",
+    "nome": "Corinthians",
+    "posicao": 17,
+    "pts": 12,
+    "vitorias": 2,
+    "empates": 6,
+    "derrotas": 4,
+    "gols_pro": 8,
+    "gols_contra": 11
+  },
+  {
+    "clube": "Mirassol",
+    "nome": "Mirassol",
+    "posicao": 18,
+    "pts": 9,
+    "vitorias": 2,
+    "empates": 3,
+    "derrotas": 6,
+    "gols_pro": 13,
+    "gols_contra": 17
+  },
+  {
+    "clube": "Remo",
+    "nome": "Remo",
+    "posicao": 19,
+    "pts": 8,
+    "vitorias": 1,
+    "empates": 5,
+    "derrotas": 6,
+    "gols_pro": 13,
+    "gols_contra": 22
+  },
+  {
+    "clube": "Chapecoense",
+    "nome": "Chapecoense",
+    "posicao": 20,
+    "pts": 8,
+    "vitorias": 1,
+    "empates": 5,
+    "derrotas": 5,
+    "gols_pro": 11,
+    "gols_contra": 22
+  }
+]

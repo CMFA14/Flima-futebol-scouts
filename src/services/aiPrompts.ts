@@ -1,6 +1,8 @@
-import { CartolaData, CartolaMatches } from '../types';
+import { CartolaData, CartolaMatches, PlayerMatchHistory } from '../types';
 import fbrefDataRaw from '../data/fbref_data.json';
 import leagueTableRaw from '../data/league_table.json';
+import { PlayerProjection, MLEvaluation } from './mlEngine';
+import { GoldenTip } from '../utils/crossStats';
 
 export interface AILineupResponse {
   formacao: string;
@@ -9,7 +11,42 @@ export interface AILineupResponse {
   capitao: number;
 }
 
-export const getLineupPrompt = (data: CartolaData, matches: CartolaMatches, budget: number): string => {
+export interface EngineContext {
+  projections?: PlayerProjection[];
+  goldenTips?: GoldenTip[];
+  lastEvaluation?: MLEvaluation | null;
+  history?: Record<number, PlayerMatchHistory[]>;
+}
+
+// Resumo compacto do histórico recente (últimos 5 jogos) para cada jogador
+// que tem histórico — evita explodir o prompt com tudo.
+const summarizeHistory = (
+  history: Record<number, PlayerMatchHistory[]> | undefined,
+  relevantIds: Set<number>
+) => {
+  if (!history) return undefined;
+  const out: Record<number, { ult5: number[]; media5: number; stdDev: number }> = {};
+  for (const id of relevantIds) {
+    const h = history[id];
+    if (!h || h.length === 0) continue;
+    const recent = h.slice(0, 5).map(x => x.pontos);
+    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const variance = recent.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / recent.length;
+    out[id] = {
+      ult5: recent.map(x => Math.round(x * 10) / 10),
+      media5: Math.round(avg * 100) / 100,
+      stdDev: Math.round(Math.sqrt(variance) * 100) / 100,
+    };
+  }
+  return out;
+};
+
+export const getLineupPrompt = (
+  data: CartolaData,
+  matches: CartolaMatches,
+  budget: number,
+  engine?: EngineContext
+): string => {
   // Only send probable players to save context and prevent AI from hallucinating doubtful players
   const probables = data.atletas.filter((p) => p.status_id === 7).map((p) => ({
     id: p.atleta_id,
@@ -19,45 +56,82 @@ export const getLineupPrompt = (data: CartolaData, matches: CartolaMatches, budg
     clube: data.clubes[p.clube_id]?.abreviacao,
     preco: p.preco_num,
     media: p.media_num,
+    jogos: p.jogos_num,
+    variacao: p.variacao_num,
+    ultima: p.pontos_num,
+    minimo_valorizar: p.minimo_para_valorizar ?? null,
   }));
 
   const matchesData = matches.partidas.map((m) => {
     const casa = data.clubes[m.clube_casa_id]?.abreviacao;
     const fora = data.clubes[m.clube_visitante_id]?.abreviacao;
-    return `${casa} x ${fora}`;
+    return {
+      jogo: `${casa} x ${fora}`,
+      local: m.local,
+      data: m.partida_data,
+      pos_casa: m.clube_casa_posicao ?? null,
+      pos_fora: m.clube_visitante_posicao ?? null,
+      aprov_casa: m.aproveitamento_mandante ?? null,
+      aprov_fora: m.aproveitamento_visitante ?? null,
+    };
   });
 
+  // Dados do motor determinístico (projeções + dicas de ouro + histórico)
+  const probableIds = new Set(probables.map(p => p.id));
+  const engineProjections = (engine?.projections || [])
+    .filter(p => probableIds.has(p.atleta_id))
+    .map(p => ({
+      id: p.atleta_id,
+      exp: p.expected_points,
+      teto: p.ceiling,
+      piso: p.floor,
+      conf: p.confidence,
+    }));
+  const engineTips = (engine?.goldenTips || []).map(t => ({
+    id: t.player.atleta_id,
+    clube: t.club.abreviacao,
+    adv: t.opponent.abreviacao,
+    tipo: t.type,
+    score: t.score,
+    motivo: t.description,
+  }));
+  const historyDigest = summarizeHistory(engine?.history, probableIds);
+  const evalInfo = engine?.lastEvaluation
+    ? {
+        rodada: engine.lastEvaluation.rodada,
+        mae: engine.lastEvaluation.mae,
+        ajustes: engine.lastEvaluation.adjustments,
+      }
+    : null;
+
   return `
-Você é um analista de dados de Elite especialista em Cartola FC e futebol avançado.
-Sua missão é montar a melhor escalação possível para a rodada atual.
+Analista Elite Cartola FC. Monte a melhor escalação para a rodada.
 
-DADOS DA RODADA:
+DADOS:
 Partidas: ${JSON.stringify(matchesData)}
+Budget: C$ ${budget}
+FBref: ${JSON.stringify(fbrefDataRaw)}
+Tabela: ${JSON.stringify(leagueTableRaw)}
+Prováveis: ${JSON.stringify(probables)}
+Projeções: ${JSON.stringify(engineProjections)}
+DicasOuro: ${JSON.stringify(engineTips)}
+Histórico: ${JSON.stringify(historyDigest || {})}
+Última Avaliação: ${JSON.stringify(evalInfo)}
 
-Orçamento máximo para o time principal: C$ ${budget}
+REGRAS:
+1. Budget Max C$ ${budget}.
+2. Use FBref para Matchups (ex: GK vs ataque fraco, ATA vs defesa porosa).
+3. Formações: "4-3-3", "4-4-2", "3-5-2", "3-4-3", "5-3-2".
+4. 11 Jogadores + 1 TÉCNICO (ID pos: 6). Respeite quantidades exatas da formação.
+5. Capitão: starter, não goleiro/técnico (x2 pts).
+6. 1 Reserva por pos, mais barato que o titular.
 
-Estatísticas Avançadas FBref:
-${JSON.stringify(fbrefDataRaw)}
-
-Lista de Jogadores Prováveis:
-${JSON.stringify(probables)}
-
-REGRAS OBRIGATÓRIAS:
-1. O custo total do seu time TITULAR não pode ultrapassar o Orçamento Máximo estabelecido (C$ ${budget}). É IMPRESCINDÍVEL respeitar esse limite matemático.
-2. Analise os confrontos da rodada e as estatísticas do FBref para encontrar os "Matchups" (Duelos) perfeitos. Ex: Escale goleiros de times grandes contra ataques de baixa conversão, defensores e volantes de times desarmadores jogando em casa, e atacantes explosivos contra defesas mais frágeis.
-3. Você DEVE escolher OBRIGATORIAMENTE um dos seguintes esquemas táticos precisos: "4-3-3", "4-4-2", "3-5-2", "3-4-3", "5-3-2".
-4. O time titular precisa ter 11 jogadores e EXATAMENTE 1 TÉCNICO (posicao_id: 6, posicao: TEC), respeitando as quantidades perfeitas do esquema escolhido. (Exemplo num 4-3-3: 1 GOL, 2 LAT, 2 ZAG, 3 MEI, 3 ATA, 1 TEC).
-5. O capitão DEVE ser o atleta de linha titular com maior potencial de mitar. A pontuação dele dobra. Ele não pode ser goleiro nem técnico.
-6. Escolha 1 reserva para cada posição que o seu esquema possui (exemplo: 1 GOL, 1 LAT, 1 ZAG, 1 MEI, 1 ATA). Os reservas custam menos que o titular mais barato focado em cada posição correspondente.
-
-FORMATO DE RESPOSTA (DE SUMA IMPORTÂNCIA):
-Retorne EXCLUSIVAMENTE um único bloco JSON, sem blocos de markdown em volta, sem formatações explicativas. Só as chaves do objeto JSON, estritamente válido:
-
+RESPOSTA (SÓ JSON, SEM TEXTO):
 {
-  "formacao": "Abreviação da formatação como string. Ex: 4-3-3",
-  "titulares": [Lista com exatamente 12 IDs numéricos representando a escalação titular incluindo o TEC],
-  "reservas": [Lista de IDs numéricos. No máximo 5, um de cada posição para os reservas],
-  "capitao": ID numérico de sua melhor aposta entre os titulares
+  "formacao": "string (ex: 4-3-3)",
+  "titulares": [12 IDs (incluindo TEC)],
+  "reservas": [Ids posições diferentes],
+  "capitao": ID
 }
   `.trim();
 };
@@ -75,7 +149,11 @@ export interface BettingTipsResponse {
   faceis: BettingTip[];
 }
 
-export const getBettingTipsPrompt = (data: CartolaData, matches: CartolaMatches): string => {
+export const getBettingTipsPrompt = (
+  data: CartolaData,
+  matches: CartolaMatches,
+  engine?: EngineContext
+): string => {
   const matchesData = matches.partidas
     .filter((m) => m.valida)
     .map((m) => {
@@ -87,45 +165,59 @@ export const getBettingTipsPrompt = (data: CartolaData, matches: CartolaMatches)
         visitante: away?.abreviacao,
         data: m.partida_data,
         local: m.local,
+        pos_casa: m.clube_casa_posicao ?? null,
+        pos_fora: m.clube_visitante_posicao ?? null,
+        aprov_casa: m.aproveitamento_mandante ?? null,
+        aprov_fora: m.aproveitamento_visitante ?? null,
       };
     });
 
+  // Para apostas, o motor agrega projeção por time somando expected_points
+  // dos jogadores prováveis — ajuda a IA a ver força ofensiva/defensiva sintética.
+  const teamStrength: Record<number, { soma_esperada: number; top_jogadores: { id: number; nome: string; pts: number }[] }> = {};
+  (engine?.projections || []).forEach(p => {
+    if (!teamStrength[p.clube_id]) teamStrength[p.clube_id] = { soma_esperada: 0, top_jogadores: [] };
+    teamStrength[p.clube_id].soma_esperada += p.expected_points;
+    teamStrength[p.clube_id].top_jogadores.push({ id: p.atleta_id, nome: p.apelido, pts: p.expected_points });
+  });
+  Object.values(teamStrength).forEach(t => {
+    t.soma_esperada = Math.round(t.soma_esperada * 10) / 10;
+    t.top_jogadores = t.top_jogadores.sort((a, b) => b.pts - a.pts).slice(0, 5);
+  });
+  const strengthByAbrev: Record<string, typeof teamStrength[number]> = {};
+  Object.entries(teamStrength).forEach(([clubeId, v]) => {
+    const abrev = data.clubes[clubeId]?.abreviacao;
+    if (abrev) strengthByAbrev[abrev] = v;
+  });
+
+  const evalInfo = engine?.lastEvaluation
+    ? { rodada: engine.lastEvaluation.rodada, mae: engine.lastEvaluation.mae }
+    : null;
+
   return `
-Você é um analista de apostas esportivas especialista em futebol brasileiro (Campeonato Brasileiro Série A).
-Sua tarefa é analisar as partidas da rodada ${matches.rodada} e gerar dicas de apostas categorizadas em 3 níveis de risco.
+Analista de apostas Brasileirão Série A. Gere dicas para rodada ${matches.rodada}.
 
-DADOS DA RODADA:
+DADOS:
 Partidas: ${JSON.stringify(matchesData)}
+Tabela: ${JSON.stringify(leagueTableRaw)}
+FBref: ${JSON.stringify(fbrefDataRaw)}
+ForçaTimes: ${JSON.stringify(strengthByAbrev)}
+Última Avaliação: ${JSON.stringify(evalInfo)}
 
-Tabela de Classificação:
-${JSON.stringify(leagueTableRaw)}
+ANÁLISE:
+- Use Tabela, FBref (SOT, INT, DS) e força esperada.
+- Dicas: Vitória, Empate, Ambas marcam, Over/Under, Handicap, etc.
 
-Estatísticas Avançadas FBref (ataque, defesa, etc.):
-- [Estatísticas por clube: Finalizações, Gols Marcados/Sofridos, Desarmes, Interceptações]
+CATEGORIAS:
+- faceis (70-90%): Dados sólidos, times superiores.
+- normais (50-69%): Tendências com incerteza.
+- arriscadas (30-49%): Zebras/mercados voláteis.
 
-Análise Sugerida:
-- Analise cada confronto usando os dados de classificação (posição, pontos, gols pró/contra, vitórias/empates/derrotas) e as estatísticas FBref (finalizações ao gol, interceptações, desarmes).
-- Para cada dica, explique de forma clara e objetiva o raciocínio baseado nos dados.
-- Gere dicas reais de apostas como: "Vitória do mandante", "Empate", "Ambos marcam", "Mais de 2.5 gols", "Menos de 2.5 gols", "Vitória do visitante", "Handicap", "Clean Sheet", "Goleada", etc.
-- Distribua as dicas nos 3 níveis abaixo:
+Gere 2-3 dicas por nível. Confiança (0-100).
 
-1. **faceis** (confiança 70-90%): Apostas com alta probabilidade baseada em dados sólidos. Times claramente superiores, defesas muito fortes, padrões consistentes.
-2. **normais** (confiança 50-69%): Apostas razoáveis com dados que sugerem uma tendência, mas com alguma incerteza.
-3. **arriscadas** (confiança 30-49%): Apostas de alto risco/alta recompensa. Resultados surpreendentes ou mercados voláteis justificados por algum dado específico.
-
-- Gere pelo menos 2 dicas por nível (total de 6 a 9 dicas).
-- O campo "confianca" deve ser um número inteiro de 0 a 100.
-
-FORMATO DE RESPOSTA (EXCLUSIVAMENTE JSON VÁLIDO, SEM MARKDOWN):
+SÓ JSON (SEM TEXTO):
 {
-  "faceis": [
-    {
-      "jogo": "ABR x XYZ",
-      "dica": "Tipo de aposta",
-      "justificativa": "Explicação baseada nos dados",
-      "confianca": 80
-    }
-  ],
+  "faceis": [{"jogo": "A x B", "dica": "X", "justificativa": "Pq...", "confianca": 80}],
   "normais": [...],
   "arriscadas": [...]
 }
